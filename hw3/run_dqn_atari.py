@@ -96,7 +96,8 @@ def set_global_seeds(i):
 def get_session():
     tf.reset_default_graph()
 
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.333)
+    #gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.333)
+    gpu_options = tf.GPUOptions()
 
     tf_config = tf.ConfigProto(
         inter_op_parallelism_threads=1,

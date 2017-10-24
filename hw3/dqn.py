@@ -1,4 +1,6 @@
 import sys
+import timeit
+
 import gym.spaces
 import itertools
 import numpy as np
@@ -130,12 +132,13 @@ def learn(env,
     # YOUR CODE HERE
 
     q_values = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
-    target_q_values = tf.expand_dims(rew_t_ph, axis=-1) + gamma * q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)
+    target_q_value = rew_t_ph + done_mask_ph * gamma * tf.reduce_max(
+        q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False), axis=1)
 
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
 
-    total_error = tf.reduce_sum(q_values - target_q_values)
+    total_error = tf.reduce_sum(q_values - tf.expand_dims(target_q_value, axis=1))
 
     ######
 
@@ -163,7 +166,7 @@ def learn(env,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
-    LOG_EVERY_N_STEPS = 10000
+    LOG_EVERY_N_STEPS = 1000
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -281,25 +284,31 @@ def learn(env,
             
             # YOUR CODE HERE
 
-            obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
+            for _ in range(1):
+                start_time = timeit.default_timer()
+                obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
 
-            if not model_initialized:
-                initialize_interdependent_variables(session, tf.global_variables(), {
+                if not model_initialized:
+                    initialize_interdependent_variables(session, tf.global_variables(), {
+                        obs_t_ph: obs_t_batch,
+                        obs_tp1_ph: obs_tp1_batch,
+                    })
+                    model_initialized = True
+
+                session.run([total_error, train_fn], feed_dict={
                     obs_t_ph: obs_t_batch,
+                    act_t_ph: act_batch,
+                    rew_t_ph: rew_batch,
                     obs_tp1_ph: obs_tp1_batch,
+                    done_mask_ph: done_mask,
+                    learning_rate: optimizer_spec.lr_schedule.value(t)
                 })
-                model_initialized = True
+                elapsed = timeit.default_timer() - start_time
+                #print('fitting iteration time: ' + str(elapsed))
 
-            session.run([total_error, train_fn], feed_dict={
-                obs_t_ph: obs_t_batch,
-                act_t_ph: act_batch,
-                rew_t_ph: rew_batch,
-                obs_tp1_ph: obs_tp1_batch,
-                done_mask_ph: done_mask,
-                learning_rate: optimizer_spec.lr_schedule.value(t)
-            })
-
+            num_param_updates += 1
             if num_param_updates % target_update_freq == 0:
+                print('Param update')
                 session.run(update_target_fn)
 
             #####
@@ -311,6 +320,7 @@ def learn(env,
         if len(episode_rewards) > 100:
             best_mean_episode_reward = max(best_mean_episode_reward, mean_episode_reward)
         if t % LOG_EVERY_N_STEPS == 0 and model_initialized:
+            print("----")
             print("Timestep %d" % (t,))
             print("mean reward (100 episodes) %f" % mean_episode_reward)
             print("best mean reward %f" % best_mean_episode_reward)
