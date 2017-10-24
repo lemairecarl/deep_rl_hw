@@ -126,8 +126,16 @@ def learn(env,
     # q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     # Older versions of TensorFlow may require using "VARIABLES" instead of "GLOBAL_VARIABLES"
     ######
-    
+
     # YOUR CODE HERE
+
+    q_values = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
+    target_q_values = tf.expand_dims(rew_t_ph, axis=-1) + gamma * q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)
+
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
+
+    total_error = tf.reduce_sum(q_values - target_q_values)
 
     ######
 
@@ -194,7 +202,34 @@ def learn(env,
 
         #####
         
-        # YOUR CODE HERE
+        # store last obs in replay buffer
+        idx = replay_buffer.store_frame(last_obs)
+
+        # get best action
+        replay_chunk = np.expand_dims(replay_buffer.encode_recent_observation(), axis=0)
+        if model_initialized:
+            q_values_eval = tf.squeeze(session.run(q_values, feed_dict={obs_t_ph: replay_chunk}))
+        else:
+            q_values_eval = np.zeros(num_actions)
+            q_values_eval[0] = 1.0
+        action = np.argmax(q_values_eval, axis=-1)
+
+        # apply e-greedy exploration
+        e_greedy_prob = np.zeros(num_actions)
+        epsilon = exploration.value(t)
+        e_greedy_prob[action] = 1 - epsilon
+        e_greedy_prob[:action] = e_greedy_prob[action + 1:] = epsilon / (num_actions - 1)
+        action = np.random.choice(num_actions, p=e_greedy_prob)
+
+        # step env
+        obs, reward, done, info = env.step(action)
+
+        # store effect of action in replay buffer
+        replay_buffer.store_effect(idx, action, reward, done)
+
+        if done:
+            obs = env.reset()
+        last_obs = obs
 
         #####
 
@@ -245,6 +280,27 @@ def learn(env,
             #####
             
             # YOUR CODE HERE
+
+            obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
+
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
+                    obs_t_ph: obs_t_batch,
+                    obs_tp1_ph: obs_tp1_batch,
+                })
+                model_initialized = True
+
+            session.run([total_error, train_fn], feed_dict={
+                obs_t_ph: obs_t_batch,
+                act_t_ph: act_batch,
+                rew_t_ph: rew_batch,
+                obs_tp1_ph: obs_tp1_batch,
+                done_mask_ph: done_mask,
+                learning_rate: optimizer_spec.lr_schedule.value(t)
+            })
+
+            if num_param_updates % target_update_freq == 0:
+                session.run(update_target_fn)
 
             #####
 
