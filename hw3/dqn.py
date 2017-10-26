@@ -248,39 +248,35 @@ def learn(env,
 
         #####
 
-        with BlockTimer('replay_buffer.store_frame'):
-            # store last obs in replay buffer
-            idx = replay_buffer.store_frame(last_obs)
+        # store last obs in replay buffer
+        idx = replay_buffer.store_frame(last_obs)
 
-        with BlockTimer('encode_recent_observation'):
-            # get best action
-            replay_chunk = np.expand_dims(replay_buffer.encode_recent_observation(), axis=0)
+        # get best action
+        replay_chunk = np.expand_dims(replay_buffer.encode_recent_observation(), axis=0)
 
         if model_initialized:
-            with BlockTimer('run q_values'):
-                q_values_eval = np.ravel(session.run(q_values, feed_dict={obs_t_ph: replay_chunk}))
+            q_values_eval = np.ravel(session.run(q_values, feed_dict={obs_t_ph: replay_chunk}))
         else:
             q_values_eval = np.zeros(num_actions)
             q_values_eval[0] = 1.0
         action = np.argmax(q_values_eval, axis=-1)
 
-        with BlockTimer('taking action'):
-            # apply e-greedy exploration
-            e_greedy_prob = np.zeros(num_actions)
-            epsilon = exploration.value(t)
-            e_greedy_prob[action] = 1 - epsilon
-            e_greedy_prob[:action] = e_greedy_prob[action + 1:] = epsilon / (num_actions - 1)
-            action = np.random.choice(num_actions, p=e_greedy_prob)
+        # apply e-greedy exploration
+        e_greedy_prob = np.zeros(num_actions)
+        epsilon = exploration.value(t)
+        e_greedy_prob[action] = 1 - epsilon
+        e_greedy_prob[:action] = e_greedy_prob[action + 1:] = epsilon / (num_actions - 1)
+        action = np.random.choice(num_actions, p=e_greedy_prob)
 
-            # step env
-            obs, reward, done, info = env.step(action)
+        # step env
+        obs, reward, done, info = env.step(action)
 
-            # store effect of action in replay buffer
-            replay_buffer.store_effect(idx, action, reward, done)
+        # store effect of action in replay buffer
+        replay_buffer.store_effect(idx, action, reward, done)
 
-            if done:
-                obs = env.reset()
-            last_obs = obs
+        if done:
+            obs = env.reset()
+        last_obs = obs
 
         #####
 
@@ -332,28 +328,23 @@ def learn(env,
             
             # YOUR CODE HERE
 
-            with BlockTimer('replay_buffer.sample'):
-                #start_time = timeit.default_timer()
-                obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
+            obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
 
-                if not model_initialized:
-                    initialize_interdependent_variables(session, tf.global_variables(), {
-                        obs_t_ph: obs_t_batch,
-                        obs_tp1_ph: obs_tp1_batch,
-                    })
-                    model_initialized = True
-
-            with BlockTimer('run train_fn'):
-                session.run([total_error, train_fn], feed_dict={
+            if not model_initialized:
+                initialize_interdependent_variables(session, tf.global_variables(), {
                     obs_t_ph: obs_t_batch,
-                    act_t_ph: act_batch,
-                    rew_t_ph: rew_batch,
                     obs_tp1_ph: obs_tp1_batch,
-                    done_mask_ph: done_mask,
-                    learning_rate: optimizer_spec.lr_schedule.value(t)
                 })
-                #elapsed = timeit.default_timer() - start_time
-                #print('fitting iteration time: ' + str(elapsed))
+                model_initialized = True
+
+            session.run([total_error, train_fn], feed_dict={
+                obs_t_ph: obs_t_batch,
+                act_t_ph: act_batch,
+                rew_t_ph: rew_batch,
+                obs_tp1_ph: obs_tp1_batch,
+                done_mask_ph: done_mask,
+                learning_rate: optimizer_spec.lr_schedule.value(t)
+            })
 
             num_param_updates += 1
             if num_param_updates % target_update_freq == 0:
@@ -376,5 +367,4 @@ def learn(env,
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
-            BlockTimer.print_report()
             sys.stdout.flush()
