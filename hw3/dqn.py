@@ -210,6 +210,7 @@ def learn(env,
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
     LOG_EVERY_N_STEPS = 10000
+    run_name = 'atari_' + time.strftime("%Y%m%d-%H%M%S")
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -368,3 +369,7 @@ def learn(env,
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
             sys.stdout.flush()
+
+            with open('log_{}.txt'.format(run_name), 'a') as f:
+                print('{:<7} {:<8.4f} {:<8.4f}'.format(t, mean_episode_reward, best_mean_episode_reward), file=f)
+
