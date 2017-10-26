@@ -1,5 +1,5 @@
 import sys
-import timeit
+import time
 
 import gym.spaces
 import itertools
@@ -8,9 +8,44 @@ import random
 import tensorflow                as tf
 import tensorflow.contrib.layers as layers
 from collections import namedtuple
+
+from collections import defaultdict
+
 from dqn_utils import *
 
 OptimizerSpec = namedtuple("OptimizerSpec", ["constructor", "kwargs", "lr_schedule"])
+
+
+class BlockTimer:
+    total_time = defaultdict(float)
+    num_exec = defaultdict(int)
+    max_time = defaultdict(float)
+
+    def __init__(self, name):
+        self.name = name
+        self.start_time = float('nan')
+
+    def __enter__(self):
+        self.start_time = time.time()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        elapsed = time.time() - self.start_time
+        self.total_time[self.name] += elapsed
+        self.num_exec[self.name] += 1
+        self.max_time[self.name] = max(self.max_time[self.name], elapsed)
+        #print('[{}] took {:.4f} s'.format(self.name, elapsed))
+
+    @staticmethod
+    def print_report():
+        print()
+        print('ALL TIMERS REPORT')
+        print('  {:<40} {:<6} {:<6}'.format('', 'mean', 'max'))
+        for timer_name in BlockTimer.total_time.keys():
+            mean_exec_time = BlockTimer.total_time[timer_name] / BlockTimer.num_exec[timer_name]
+            max_time = BlockTimer.max_time[timer_name]
+            print('  {:>40} {:>.4f} {:>.4f}'.format(timer_name, mean_exec_time, max_time))
+        print()
+
 
 def learn(env,
           q_func,
@@ -131,6 +166,14 @@ def learn(env,
 
     # YOUR CODE HERE
 
+    def huber_loss(x, delta=1.0):
+        """Reference: https://en.wikipedia.org/wiki/Huber_loss"""
+        return tf.where(
+            tf.abs(x) < delta,
+            tf.square(x) * 0.5,
+            delta * (tf.abs(x) - 0.5 * delta)
+        )
+
     q_values = q_func(obs_t_float, num_actions, scope="q_func", reuse=False)
     target_q_value = rew_t_ph + done_mask_ph * gamma * tf.reduce_max(
         q_func(obs_tp1_float, num_actions, scope="target_q_func", reuse=False), axis=1)
@@ -138,7 +181,7 @@ def learn(env,
     q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
     target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
 
-    total_error = tf.reduce_sum(q_values - tf.expand_dims(target_q_value, axis=1))
+    total_error = tf.reduce_mean(huber_loss(q_values - tf.expand_dims(target_q_value, axis=1)))
 
     ######
 
@@ -166,7 +209,7 @@ def learn(env,
     mean_episode_reward      = -float('nan')
     best_mean_episode_reward = -float('inf')
     last_obs = env.reset()
-    LOG_EVERY_N_STEPS = 1000
+    LOG_EVERY_N_STEPS = 10000
 
     for t in itertools.count():
         ### 1. Check stopping criterion
@@ -204,35 +247,40 @@ def learn(env,
         # might as well be random, since you haven't trained your net...)
 
         #####
-        
-        # store last obs in replay buffer
-        idx = replay_buffer.store_frame(last_obs)
 
-        # get best action
-        replay_chunk = np.expand_dims(replay_buffer.encode_recent_observation(), axis=0)
+        with BlockTimer('replay_buffer.store_frame'):
+            # store last obs in replay buffer
+            idx = replay_buffer.store_frame(last_obs)
+
+        with BlockTimer('encode_recent_observation'):
+            # get best action
+            replay_chunk = np.expand_dims(replay_buffer.encode_recent_observation(), axis=0)
+
         if model_initialized:
-            q_values_eval = tf.squeeze(session.run(q_values, feed_dict={obs_t_ph: replay_chunk}))
+            with BlockTimer('run q_values'):
+                q_values_eval = np.ravel(session.run(q_values, feed_dict={obs_t_ph: replay_chunk}))
         else:
             q_values_eval = np.zeros(num_actions)
             q_values_eval[0] = 1.0
         action = np.argmax(q_values_eval, axis=-1)
 
-        # apply e-greedy exploration
-        e_greedy_prob = np.zeros(num_actions)
-        epsilon = exploration.value(t)
-        e_greedy_prob[action] = 1 - epsilon
-        e_greedy_prob[:action] = e_greedy_prob[action + 1:] = epsilon / (num_actions - 1)
-        action = np.random.choice(num_actions, p=e_greedy_prob)
+        with BlockTimer('taking action'):
+            # apply e-greedy exploration
+            e_greedy_prob = np.zeros(num_actions)
+            epsilon = exploration.value(t)
+            e_greedy_prob[action] = 1 - epsilon
+            e_greedy_prob[:action] = e_greedy_prob[action + 1:] = epsilon / (num_actions - 1)
+            action = np.random.choice(num_actions, p=e_greedy_prob)
 
-        # step env
-        obs, reward, done, info = env.step(action)
+            # step env
+            obs, reward, done, info = env.step(action)
 
-        # store effect of action in replay buffer
-        replay_buffer.store_effect(idx, action, reward, done)
+            # store effect of action in replay buffer
+            replay_buffer.store_effect(idx, action, reward, done)
 
-        if done:
-            obs = env.reset()
-        last_obs = obs
+            if done:
+                obs = env.reset()
+            last_obs = obs
 
         #####
 
@@ -284,8 +332,8 @@ def learn(env,
             
             # YOUR CODE HERE
 
-            for _ in range(1):
-                start_time = timeit.default_timer()
+            with BlockTimer('replay_buffer.sample'):
+                #start_time = timeit.default_timer()
                 obs_t_batch, act_batch, rew_batch, obs_tp1_batch, done_mask = replay_buffer.sample(batch_size)
 
                 if not model_initialized:
@@ -295,6 +343,7 @@ def learn(env,
                     })
                     model_initialized = True
 
+            with BlockTimer('run train_fn'):
                 session.run([total_error, train_fn], feed_dict={
                     obs_t_ph: obs_t_batch,
                     act_t_ph: act_batch,
@@ -303,7 +352,7 @@ def learn(env,
                     done_mask_ph: done_mask,
                     learning_rate: optimizer_spec.lr_schedule.value(t)
                 })
-                elapsed = timeit.default_timer() - start_time
+                #elapsed = timeit.default_timer() - start_time
                 #print('fitting iteration time: ' + str(elapsed))
 
             num_param_updates += 1
@@ -327,4 +376,5 @@ def learn(env,
             print("episodes %d" % len(episode_rewards))
             print("exploration %f" % exploration.value(t))
             print("learning_rate %f" % optimizer_spec.lr_schedule.value(t))
+            BlockTimer.print_report()
             sys.stdout.flush()
